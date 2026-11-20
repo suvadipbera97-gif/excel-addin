@@ -121,16 +121,22 @@ async function applyFilter() {
   if (!name) throw new Error("Pick a sheet to filter.");
   if (!v1 || (op === "between" && !v2)) throw new Error("Enter a value to filter by.");
 
-  let shown = null, total = null;
+  let shown = 0, total = 0;
   await Excel.run(async (ctx) => {
     const ws = ctx.workbook.worksheets.getItem(name);
     const used = ws.getUsedRange(true);
     ws.autoFilter.apply(used, col, { filterOn: Excel.FilterOn.custom, ...criteria(op, v1, v2) });
     await ctx.sync();
-    const view = used.getVisibleView();
-    used.load("rowCount"); view.load("rowCount");
+    used.load("rowCount");
+    const vis = used.getSpecialCellsOrNullObject(Excel.SpecialCellType.visible);
+    vis.load("isNullObject");
     await ctx.sync();
-    total = used.rowCount - 1; shown = view.rowCount - 1;
+    if (!vis.isNullObject) {
+      vis.areas.load("items/rowCount");
+      await ctx.sync();
+      shown = vis.areas.items.reduce((n, a) => n + a.rowCount, 0) - 1;
+    }
+    total = used.rowCount - 1;
   });
   setStatus(`Filter applied. Showing ${shown} of ${total} rows on "${name}".`);
 }
@@ -153,10 +159,19 @@ async function readSheet(name, visibleOnly) {
     used.load("isNullObject");
     await ctx.sync();
     if (used.isNullObject) return;
-    const src = visibleOnly ? used.getVisibleView() : used;
-    src.load(["values", "text"]);
+    if (!visibleOnly) {
+      used.load(["values", "text"]);
+      await ctx.sync();
+      out.values = used.values; out.text = used.text;
+      return;
+    }
+    const vis = used.getSpecialCellsOrNullObject(Excel.SpecialCellType.visible);
+    vis.load("isNullObject");
     await ctx.sync();
-    out.values = src.values; out.text = src.text;
+    if (vis.isNullObject) return;
+    vis.areas.load("items/values,items/text");
+    await ctx.sync();
+    vis.areas.items.forEach((a) => { out.values.push(...a.values); out.text.push(...a.text); });
   });
   return out;
 }

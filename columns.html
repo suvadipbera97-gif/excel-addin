@@ -1,0 +1,77 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<link rel="stylesheet" href="shared.css"><script src="shared.js"></script>
+<title>Split and merge</title></head><body>
+<h1>Split and merge columns</h1>
+<section>
+  <h2>Split one column</h2>
+  <p class="status">Select the cells of one column, then choose where to split. New columns are added to the right; the original stays.</p>
+  <label for="sd">Split at</label>
+  <select id="sd">
+    <option value=",">Comma</option><option value=";">Semicolon</option><option value=" ">Space</option>
+    <option value="-">Hyphen</option><option value="/">Slash</option><option value="custom">Other...</option>
+  </select>
+  <div id="sc" class="hidden"><label for="scv">Split text</label><input type="text" id="scv"></div>
+  <div class="actions"><button class="primary" id="split">Split</button></div>
+</section>
+<section>
+  <h2>Merge columns</h2>
+  <p class="status">Select two or more columns. The merged result goes in a new column to the right.</p>
+  <label for="md">Join with</label>
+  <select id="md">
+    <option value=" ">Space</option><option value=", ">Comma and space</option><option value="-">Hyphen</option>
+    <option value="">Nothing</option><option value="custom">Other...</option>
+  </select>
+  <div id="mc" class="hidden"><label for="mcv">Join text</label><input type="text" id="mcv"></div>
+  <label class="opt"><input type="checkbox" id="skip" checked> Skip empty cells</label>
+  <div class="actions"><button class="primary" id="merge">Merge</button></div>
+</section>
+<p class="status" id="status" role="status" aria-live="polite"></p>
+<script>
+ready(() => {
+  $("sd").onchange = () => $("sc").classList.toggle("hidden", $("sd").value !== "custom");
+  $("md").onchange = () => $("mc").classList.toggle("hidden", $("md").value !== "custom");
+  $("split").onclick = () => run(split);
+  $("merge").onclick = () => run(merge);
+});
+
+async function split() {
+  const d = $("sd").value === "custom" ? $("scv").value : $("sd").value;
+  if (!d) throw new Error("Enter the text to split at.");
+  let made = 0;
+  await Excel.run(async (ctx) => {
+    const sel = ctx.workbook.getSelectedRange();
+    sel.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+    await ctx.sync();
+    if (sel.columnCount !== 1) throw new Error("Select cells in one column only.");
+    const parts = sel.values.map((r) => String(r[0]).split(d).map((s) => s.trim()));
+    const n = Math.max(...parts.map((p) => p.length));
+    if (n < 2) throw new Error("Nothing to split: that text doesn't appear in the selection.");
+    const ws = ctx.workbook.worksheets.getActiveWorksheet();
+    ws.getRangeByIndexes(0, sel.columnIndex + 1, 1, n).getEntireColumn().insert(Excel.InsertShiftDirection.right);
+    ws.getRangeByIndexes(sel.rowIndex, sel.columnIndex + 1, sel.rowCount, n).values =
+      parts.map((p) => Array.from({ length: n }, (_, i) => (p[i] === undefined ? "" : p[i])));
+    await ctx.sync();
+    made = n;
+  });
+  setStatus("Split into " + made + " new columns.");
+}
+
+async function merge() {
+  const d = $("md").value === "custom" ? $("mcv").value : $("md").value;
+  const skip = $("skip").checked;
+  await Excel.run(async (ctx) => {
+    const sel = ctx.workbook.getSelectedRange();
+    sel.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]);
+    await ctx.sync();
+    if (sel.columnCount < 2) throw new Error("Select at least two columns.");
+    const ws = ctx.workbook.worksheets.getActiveWorksheet();
+    const at = sel.columnIndex + sel.columnCount;
+    ws.getRangeByIndexes(0, at, 1, 1).getEntireColumn().insert(Excel.InsertShiftDirection.right);
+    ws.getRangeByIndexes(sel.rowIndex, at, sel.rowCount, 1).values =
+      sel.values.map((r) => [(skip ? r.filter((c) => c !== "") : r).join(d)]);
+    await ctx.sync();
+  });
+  setStatus("Merged into a new column on the right.");
+}
+</script></body></html>

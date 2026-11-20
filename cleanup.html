@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<link rel="stylesheet" href="shared.css"><script src="shared.js"></script>
+<title>Clean data</title></head><body>
+<h1>Clean data</h1>
+<div id="scope"></div>
+<section>
+  <h2>Options</h2>
+  <label class="opt"><input type="checkbox" id="trim" checked> Trim extra spaces</label>
+  <label for="case">Change text case</label>
+  <select id="case">
+    <option value="none">Leave as is</option><option value="upper">UPPERCASE</option>
+    <option value="lower">lowercase</option><option value="proper">Proper Case</option>
+  </select>
+  <label class="opt"><input type="checkbox" id="blanks"> Delete empty rows</label>
+  <label class="opt"><input type="checkbox" id="dups"> Remove duplicate rows</label>
+  <label class="opt"><input type="checkbox" id="hdr" checked> First row is a header (kept)</label>
+</section>
+<div class="actions"><button class="primary" id="go">Clean data</button></div>
+<p class="status" id="status" role="status" aria-live="polite"></p>
+<script>
+$("scope").innerHTML = SCOPE_HTML;
+ready(() => ($("go").onclick = () => run(clean)));
+
+async function clean() {
+  const trim = $("trim").checked, mode = $("case").value, blanks = $("blanks").checked,
+        dups = $("dups").checked, hasHeader = $("hdr").checked, scope = val("scope");
+  if (!trim && mode === "none" && !blanks && !dups) throw new Error("Pick at least one option.");
+  const msgs = [];
+
+  await Excel.run(async (ctx) => {
+    let range = getRange(ctx, scope);
+    range.load(["values", "formulas", "rowCount", "columnCount"]);
+    await ctx.sync();
+
+    if (trim || mode !== "none") {
+      let changed = 0;
+      for (let i = 0; i < range.rowCount; i++) for (let j = 0; j < range.columnCount; j++) {
+        const v = range.values[i][j], f = range.formulas[i][j];
+        if (typeof v !== "string" || v === "" || (typeof f === "string" && f.startsWith("="))) continue;
+        let n = v;
+        if (trim) n = n.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+        if (mode === "upper") n = n.toUpperCase();
+        if (mode === "lower") n = n.toLowerCase();
+        if (mode === "proper") n = n.toLowerCase().replace(/(^|[\s\-(])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+        if (n !== v) { range.getCell(i, j).values = [[n]]; changed++; }
+      }
+      await ctx.sync();
+      msgs.push(changed + " cells updated");
+    }
+
+    if (blanks) {
+      range.load("values"); await ctx.sync();
+      let removed = 0;
+      for (let i = range.values.length - 1; i >= 0; i--) {
+        if (range.values[i].every((c) => c === "")) { range.getRow(i).delete(Excel.DeleteShiftDirection.up); removed++; }
+      }
+      await ctx.sync();
+      msgs.push(removed + " empty rows deleted");
+    }
+
+    if (dups) {
+      range = getRange(ctx, scope);
+      range.load("columnCount"); await ctx.sync();
+      const res = range.removeDuplicates([...Array(range.columnCount).keys()], hasHeader);
+      res.load("removed"); await ctx.sync();
+      msgs.push(res.removed + " duplicate rows removed");
+    }
+  });
+  setStatus(msgs.join(". ") + ".");
+}
+</script></body></html>

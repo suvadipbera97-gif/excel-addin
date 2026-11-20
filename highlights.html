@@ -1,0 +1,60 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<link rel="stylesheet" href="shared.css"><script src="shared.js"></script>
+<title>Highlights</title></head><body>
+<h1>Highlights</h1>
+<div id="scope"></div>
+<section>
+  <h2>Highlight</h2>
+  <label for="mode">Cells that are</label>
+  <select id="mode">
+    <option value="dups">Duplicates</option><option value="unique">Unique</option>
+    <option value="blank">Blank</option><option value="text">Containing text</option>
+  </select>
+  <div id="textWrap" class="hidden"><label for="txt">Text</label><input type="text" id="txt"></div>
+  <label for="color">Colour</label>
+  <input type="color" id="color" value="#ffe066">
+</section>
+<div class="actions">
+  <button class="primary" id="go">Highlight</button>
+  <button id="clear">Remove highlights</button>
+</div>
+<p class="status" id="status" role="status" aria-live="polite"></p>
+<script>
+$("scope").innerHTML = SCOPE_HTML;
+ready(() => {
+  $("mode").onchange = () => $("textWrap").classList.toggle("hidden", $("mode").value !== "text");
+  $("go").onclick = () => run(highlight);
+  $("clear").onclick = () => run(clearFill);
+});
+
+async function highlight() {
+  const mode = $("mode").value, color = $("color").value, needle = $("txt").value.toLowerCase();
+  if (mode === "text" && !needle) throw new Error("Enter the text to look for.");
+  let n = 0;
+  await Excel.run(async (ctx) => {
+    const range = getRange(ctx, val("scope"));
+    range.load(["values", "rowCount", "columnCount"]);
+    await ctx.sync();
+    const key = (v) => String(v).trim().toLowerCase();
+    const counts = new Map();
+    range.values.flat().forEach((v) => { if (v !== "") counts.set(key(v), (counts.get(key(v)) || 0) + 1); });
+    for (let i = 0; i < range.rowCount; i++) for (let j = 0; j < range.columnCount; j++) {
+      const v = range.values[i][j];
+      const hit = mode === "blank" ? v === ""
+        : v === "" ? false
+        : mode === "dups" ? counts.get(key(v)) > 1
+        : mode === "unique" ? counts.get(key(v)) === 1
+        : key(v).includes(needle);
+      if (hit) { range.getCell(i, j).format.fill.color = color; n++; }
+    }
+    await ctx.sync();
+  });
+  setStatus(n + " cells highlighted.");
+}
+
+async function clearFill() {
+  await Excel.run(async (ctx) => { getRange(ctx, val("scope")).format.fill.clear(); await ctx.sync(); });
+  setStatus("Highlights removed (all cell fill colours in the range).");
+}
+</script></body></html>

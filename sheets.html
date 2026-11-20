@@ -1,0 +1,116 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<link rel="stylesheet" href="shared.css"><script src="shared.js"></script>
+<title>Sheet manager</title></head><body>
+<h1>Sheet manager</h1>
+<section>
+  <h2>Sheets <span><button class="link" id="all">Select all</button> &nbsp; <button class="link" id="refresh">Refresh</button></span></h2>
+  <div class="list" id="list"></div>
+  <div class="actions">
+    <button id="hide">Hide</button><button id="unhide">Unhide</button>
+    <button id="dupe">Duplicate</button><button class="danger" id="del">Delete</button>
+  </div>
+</section>
+<section>
+  <h2>Workbook</h2>
+  <div class="actions">
+    <button id="sortAz">Sort A to Z</button><button id="sortZa">Sort Z to A</button>
+    <button id="index">Create index sheet</button>
+  </div>
+</section>
+<p class="status" id="status" role="status" aria-live="polite"></p>
+<script>
+let sheets = [], armed = false, armTimer;
+ready(() => {
+  $("all").onclick = () => document.querySelectorAll("#list input").forEach((i) => (i.checked = true));
+  $("refresh").onclick = () => run(load);
+  $("hide").onclick = () => run(() => setVis("Hidden", "hidden"));
+  $("unhide").onclick = () => run(() => setVis("Visible", "unhidden"));
+  $("dupe").onclick = () => run(duplicate);
+  $("del").onclick = () => run(remove);
+  $("sortAz").onclick = () => run(() => sortSheets(1));
+  $("sortZa").onclick = () => run(() => sortSheets(-1));
+  $("index").onclick = () => run(makeIndex);
+  run(load);
+});
+
+const picked = () => {
+  const n = [...document.querySelectorAll("#list input:checked")].map((i) => i.value);
+  if (!n.length) throw new Error("Tick at least one sheet.");
+  return n;
+};
+
+async function load() {
+  await Excel.run(async (ctx) => {
+    const c = ctx.workbook.worksheets; c.load("items/name,items/visibility"); await ctx.sync();
+    sheets = c.items.map((s) => ({ name: s.name, vis: s.visibility }));
+  });
+  $("list").innerHTML = sheets.map((s) =>
+    '<label class="opt"><input type="checkbox" value="' + esc(s.name) + '"> ' + esc(s.name) +
+    (s.vis !== "Visible" ? '<span class="tag">hidden</span>' : "") + "</label>").join("");
+}
+
+async function setVis(state, word) {
+  const names = picked();
+  await Excel.run(async (ctx) => {
+    names.forEach((n) => (ctx.workbook.worksheets.getItem(n).visibility = state));
+    await ctx.sync();
+  });
+  await load(); setStatus(names.length + " sheet(s) " + word + ".");
+}
+
+async function duplicate() {
+  const names = picked();
+  await Excel.run(async (ctx) => {
+    names.forEach((n) => ctx.workbook.worksheets.getItem(n).copy(Excel.WorksheetPositionType.end));
+    await ctx.sync();
+  });
+  await load(); setStatus(names.length + " sheet(s) duplicated.");
+}
+
+async function remove() {
+  const names = picked();
+  if (!armed) {
+    armed = true; $("del").textContent = "Click again to delete";
+    setStatus("This deletes " + names.length + " sheet(s) and can't be undone.", true);
+    armTimer = setTimeout(disarm, 4000);
+    return;
+  }
+  disarm();
+  await Excel.run(async (ctx) => {
+    names.forEach((n) => ctx.workbook.worksheets.getItem(n).delete());
+    await ctx.sync();
+  });
+  await load(); setStatus(names.length + " sheet(s) deleted.");
+}
+function disarm() { armed = false; clearTimeout(armTimer); $("del").textContent = "Delete"; }
+
+async function sortSheets(dir) {
+  const sorted = sheets.map((s) => s.name).sort((a, b) => dir * a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  await Excel.run(async (ctx) => {
+    sorted.forEach((n, i) => (ctx.workbook.worksheets.getItem(n).position = i));
+    await ctx.sync();
+  });
+  await load(); setStatus("Sheets sorted.");
+}
+
+async function makeIndex() {
+  const taken = new Set(sheets.map((s) => s.name.toLowerCase()));
+  let name = "Index", i = 2;
+  while (taken.has(name.toLowerCase())) name = "Index " + i++;
+  const names = sheets.filter((s) => s.vis === "Visible").map((s) => s.name);
+  await Excel.run(async (ctx) => {
+    const ws = ctx.workbook.worksheets.add(name);
+    ws.getRange("A1").values = [["Sheet"]];
+    ws.getRange("A1").format.font.bold = true;
+    if (names.length) {
+      ws.getRangeByIndexes(1, 0, names.length, 1).formulas = names.map((n) =>
+        ['=HYPERLINK("#\'' + n.replace(/'/g, "''").replace(/"/g, '""') + '\'!A1","' + n.replace(/"/g, '""') + '")']);
+    }
+    ws.getRangeByIndexes(0, 0, names.length + 1, 1).format.autofitColumns();
+    ws.position = 0; ws.activate();
+    await ctx.sync();
+  });
+  await load(); setStatus('Created "' + name + '" with links to ' + names.length + " sheets.");
+}
+</script></body></html>
