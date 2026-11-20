@@ -1,0 +1,241 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<link rel="stylesheet" href="shared.css"><script src="shared.js"></script>
+<title>AI tools</title>
+<style>
+  textarea, input[type=password] { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:4px; font:inherit; color:var(--ink); background:#fff; }
+  textarea { resize:vertical; }
+  textarea:focus, input[type=password]:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  #out { white-space:pre-wrap; word-break:break-word; max-height:260px; overflow-y:auto; border:1px solid var(--line); border-radius:4px; padding:8px; background:#fbfcfc; }
+  .note { color:var(--muted); font-size:12px; margin:8px 0 0; }
+</style></head><body>
+<h1>AI tools</h1>
+
+<section>
+  <h2>Connection (free)</h2>
+  <label for="key">Google Gemini API key</label>
+  <input type="password" id="key" placeholder="AIza..." autocomplete="off">
+  <label for="model">Model</label>
+  <input type="text" id="model" list="models" value="gemini-flash-latest">
+  <datalist id="models">
+    <option value="gemini-flash-latest"><option value="gemini-flash-lite-latest">
+    <option value="gemini-2.5-flash"><option value="gemini-2.5-flash-lite">
+  </datalist>
+  <div class="actions"><button id="saveKey">Save</button><button id="rmKey">Remove key</button></div>
+  <p class="note">Get a free key at aistudio.google.com/app/apikey (sign in with Google, no card needed). The key stays on this computer. On the free tier, Google may use what you send to improve its products, so avoid confidential data.</p>
+</section>
+
+<section>
+  <h2>Tool</h2>
+  <label for="mode">What do you want to do?</label>
+  <select id="mode">
+    <option value="ask">Ask about my data</option>
+    <option value="formula">Write a formula</option>
+    <option value="transform">Change each cell with AI</option>
+    <option value="explain">Explain a formula</option>
+  </select>
+  <div id="scopeWrap"></div>
+  <div id="promptWrap">
+    <label for="prompt" id="plabel"></label>
+    <textarea id="prompt" rows="3"></textarea>
+  </div>
+  <div class="actions"><button class="primary" id="go"></button></div>
+  <p class="note" id="hint"></p>
+</section>
+
+<section id="outSec" class="hidden">
+  <h2>Result <button class="link" id="insert">Insert in active cell</button></h2>
+  <div id="out"></div>
+</section>
+<p class="status" id="status" role="status" aria-live="polite"></p>
+
+<script>
+const LS = {
+  get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch (e) {} },
+};
+let memKey = "", lastText = "", lastKind = "text";
+const getKey = () => LS.get("gem_key") || memKey;
+
+const MODES = {
+  ask:       { label: "Your question about the data", ph: "Which department has the most employees?", btn: "Ask", scope: true, prompt: true,
+               hint: "Uses your selected cells, or the whole sheet (first 300 rows). For exact totals, a formula is more reliable than AI arithmetic." },
+  formula:   { label: "Describe the formula you need", ph: "Count employees in Finance whose salary is above 50000", btn: "Write formula", scope: false, prompt: true,
+               hint: "Reads the headers and a few sample rows of the active sheet. Then insert the formula into the active cell." },
+  transform: { label: "What should happen to each selected cell?", ph: "Translate to Hindi   |   Classify as positive, negative or neutral   |   Extract the city", btn: "Run on selection", scope: false, prompt: true,
+               hint: "Select cells in ONE column (up to 500). Results go in a new column to the right; your original stays." },
+  explain:   { label: "", ph: "", btn: "Explain formula in active cell", scope: false, prompt: false,
+               hint: "Click a cell that contains a formula first." },
+};
+
+ready(() => {
+  $("scopeWrap").innerHTML = SCOPE_HTML;
+  $("key").value = getKey() ? "••••••••••••" : "";
+  const m = LS.get("gem_model"); if (m) $("model").value = m;
+  $("saveKey").onclick = saveKey;
+  $("rmKey").onclick = () => { LS.del("gem_key"); memKey = ""; $("key").value = ""; setStatus("Key removed."); };
+  $("model").onchange = () => LS.set("gem_model", $("model").value.trim());
+  $("mode").onchange = applyMode;
+  $("go").onclick = () => run(go);
+  $("insert").onclick = () => run(insertResult);
+  applyMode();
+});
+
+function applyMode() {
+  const c = MODES[$("mode").value];
+  $("plabel").textContent = c.label; $("prompt").placeholder = c.ph; $("go").textContent = c.btn;
+  $("hint").textContent = c.hint;
+  $("promptWrap").classList.toggle("hidden", !c.prompt);
+  $("scopeWrap").classList.toggle("hidden", !c.scope);
+  $("outSec").classList.add("hidden"); setStatus("");
+}
+
+function saveKey() {
+  const v = $("key").value.trim();
+  if (!v || v.startsWith("•")) return setStatus(v ? "Key already saved." : "Paste your API key first.", !v);
+  memKey = v; LS.set("gem_key", v); $("key").value = "••••••••••••";
+  setStatus("Key saved on this computer.");
+}
+
+/* ---------- call the Google Gemini API (free tier) ---------- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function callAI(system, user) {
+  const key = getKey();
+  if (!key) throw new Error("Paste your free Gemini API key above and click Save.");
+  const model = ($("model").value || "gemini-flash-latest").trim();
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent";
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: { maxOutputTokens: 8192 },
+  });
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key }, body });
+    } catch (e) { throw new Error("Couldn't reach Google. Check your internet connection."); }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429 && attempt < 3) { setStatus("Free limit reached. Waiting a few seconds..."); await sleep(8000); continue; }
+    if (res.status === 429) throw new Error("Free limit reached (it resets daily). Try again later or select fewer rows.");
+    if (res.status === 400 || res.status === 403) {
+      const msg = (data.error && data.error.message) || "";
+      if (/api key/i.test(msg)) throw new Error("The API key was rejected. Check it and save again.");
+      throw new Error(msg || "Request refused (" + res.status + ").");
+    }
+    if (res.status === 404) throw new Error("Model \"" + model + "\" wasn't found. Change the Model box to another Flash model from aistudio.google.com.");
+    if (!res.ok) throw new Error((data.error && data.error.message) || "The AI request failed (" + res.status + ").");
+    const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+    const text = parts.map((p) => p.text || "").join("").trim();
+    if (!text) throw new Error("The AI returned nothing. Try again or rephrase.");
+    return text;
+  }
+}
+
+const colLetter = (n) => { let s = ""; for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
+const stripFences = (t) => t.replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, "").trim();
+
+function showOut(text, kind) {
+  lastText = text; lastKind = kind;
+  $("out").textContent = text; $("outSec").classList.remove("hidden");
+  $("insert").classList.toggle("hidden", false);
+}
+
+async function insertResult() {
+  await Excel.run(async (ctx) => {
+    const c = ctx.workbook.getActiveCell();
+    if (lastKind === "formula") c.formulas = [[lastText]]; else c.values = [[lastText]];
+    await ctx.sync();
+  });
+  setStatus("Inserted in the active cell.");
+}
+
+async function go() {
+  const mode = $("mode").value, p = $("prompt").value.trim();
+  if (MODES[mode].prompt && !p) throw new Error("Type what you want first.");
+  setStatus("Working...");
+  if (mode === "ask") await doAsk(p);
+  else if (mode === "formula") await doFormula(p);
+  else if (mode === "transform") await doTransform(p);
+  else await doExplain();
+}
+
+/* ---------- ask about data ---------- */
+async function doAsk(q) {
+  let rows = [];
+  await Excel.run(async (ctx) => { const r = getRange(ctx, val("scope")); r.load("values"); await ctx.sync(); rows = r.values; });
+  if (rows.length === 1 && rows[0].length === 1) throw new Error("Select the cells to ask about, or choose Whole active sheet.");
+  const cut = rows.length > 300;
+  const text = rows.slice(0, 300).map((r) => r.slice(0, 30).join("\t")).join("\n");
+  const answer = await callAI(
+    "You are a careful data analyst working inside Excel. Answer only from the data provided (tab-separated, first row is the header). Be concise. If the answer needs exact arithmetic over many rows, give your best answer and say a formula would be more reliable.",
+    "Data:\n" + text + "\n\nQuestion: " + q);
+  showOut(answer, "text");
+  setStatus(cut ? "Done. Only the first 300 rows were sent." : "Done.");
+}
+
+/* ---------- write a formula ---------- */
+async function doFormula(req) {
+  let ctxText = "";
+  await Excel.run(async (ctx) => {
+    const ws = ctx.workbook.worksheets.getActiveWorksheet();
+    const used = ws.getUsedRange(true); used.load(["rowIndex", "columnIndex", "rowCount", "columnCount", "address"]);
+    const cell = ctx.workbook.getActiveCell(); cell.load("address");
+    await ctx.sync();
+    const top = ws.getRangeByIndexes(used.rowIndex, used.columnIndex, Math.min(4, used.rowCount), used.columnCount);
+    top.load("values"); await ctx.sync();
+    const first = used.rowIndex + 2, last = used.rowIndex + used.rowCount;
+    const cols = top.values[0].map((h, j) => {
+      const L = colLetter(used.columnIndex + j);
+      const ex = top.values.slice(1).map((r) => r[j]).filter((x) => x !== "").join(", ");
+      return `Column ${L}: "${h}" (examples: ${ex}) -> data range $${L}$${first}:$${L}$${last}`;
+    });
+    ctxText = `Active sheet data starts at row ${used.rowIndex + 1} (headers) and ends at row ${last}.\n` + cols.join("\n") + `\nThe formula will go in cell ${cell.address.split("!").pop()}.`;
+  });
+  const f = stripFences(await callAI(
+    "You write Excel formulas for Excel 2021. Reply with ONLY the formula, starting with =, with no explanation and no code fences. Use English function names and commas as separators. Use the exact column ranges provided.",
+    ctxText + "\n\nRequest: " + req));
+  if (!f.startsWith("=")) throw new Error("The AI didn't return a formula. Try describing it differently.");
+  showOut(f, "formula");
+  setStatus("Check the formula, then insert it.");
+}
+
+/* ---------- explain a formula ---------- */
+async function doExplain() {
+  let f = "";
+  await Excel.run(async (ctx) => { const c = ctx.workbook.getActiveCell(); c.load("formulas"); await ctx.sync(); f = String(c.formulas[0][0]); });
+  if (!f.startsWith("=")) throw new Error("The active cell doesn't contain a formula.");
+  const t = await callAI("You explain Excel formulas in simple plain English, step by step, in under 120 words.", f);
+  showOut(t, "text"); setStatus("Done.");
+}
+
+/* ---------- change each cell with AI ---------- */
+async function doTransform(instr) {
+  let sel = {};
+  await Excel.run(async (ctx) => {
+    const r = ctx.workbook.getSelectedRange(); r.load(["values", "rowIndex", "columnIndex", "rowCount", "columnCount"]); await ctx.sync();
+    sel = { values: r.values, row: r.rowIndex, col: r.columnIndex, rows: r.rowCount, cols: r.columnCount };
+  });
+  if (sel.cols !== 1) throw new Error("Select cells in one column only.");
+  if (sel.rows > 500) throw new Error("Select 500 rows or fewer at a time.");
+  const items = sel.values.map((r) => String(r[0])), out = [];
+  for (let i = 0; i < items.length; i += 40) {
+    setStatus("Working... " + i + " of " + items.length);
+    const chunk = items.slice(i, i + 40);
+    const raw = stripFences(await callAI(
+      "You transform spreadsheet cell values. You receive an instruction and a JSON array of strings. Reply with ONLY a JSON array of strings with exactly the same number of items, in the same order. No explanation, no code fences. If an item can't be processed, return an empty string for it.",
+      "Instruction: " + instr + "\n\nInput:\n" + JSON.stringify(chunk)));
+    let arr; try { arr = JSON.parse(raw); } catch (e) { arr = null; }
+    if (!Array.isArray(arr) || arr.length !== chunk.length) throw new Error("The AI gave an unexpected answer. Try again, or select fewer rows.");
+    arr.forEach((x) => { const s = String(x == null ? "" : x); out.push(s.startsWith("=") ? "'" + s : s); });
+  }
+  await Excel.run(async (ctx) => {
+    const ws = ctx.workbook.worksheets.getActiveWorksheet();
+    ws.getRangeByIndexes(0, sel.col + 1, 1, 1).getEntireColumn().insert(Excel.InsertShiftDirection.right);
+    ws.getRangeByIndexes(sel.row, sel.col + 1, sel.rows, 1).values = out.map((x) => [x]);
+    await ctx.sync();
+  });
+  $("outSec").classList.add("hidden");
+  setStatus("Done. Results are in the new column to the right of your selection.");
+}
+</script></body></html>
